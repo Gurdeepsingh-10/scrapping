@@ -1,3 +1,10 @@
+import asyncio
+import time
+import psutil
+from rich.console import Console
+from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
+
 from crawl4ai import (
     AsyncWebCrawler,
     BrowserConfig,
@@ -6,7 +13,9 @@ from crawl4ai import (
     CrawlerMonitor,
     MemoryAdaptiveDispatcher
 )
-import asyncio
+
+console = Console()
+process = psutil.Process()
 
 
 async def crawl_batch():
@@ -18,7 +27,7 @@ async def crawl_batch():
         stream=False
     )
 
-    monitor = CrawlerMonitor()  # No display_mode
+    monitor = CrawlerMonitor()  # Base monitor
 
     dispatcher = MemoryAdaptiveDispatcher(
         memory_threshold_percent=70.0,
@@ -34,41 +43,67 @@ async def crawl_batch():
         "https://www.codingwithroby.com/freebies",
     ]
 
+    start_time = time.time()
+
     async with AsyncWebCrawler(config=browserconfig) as crawler:
-        results = await crawler.arun_many(
-            urls=urls,
-            config=run_config,
-            dispatcher=dispatcher
-        )
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            transient=True,
+        ) as progress:
+
+            task = progress.add_task("Crawling pages...", total=len(urls))
+            results = await crawler.arun_many(
+                urls=urls,
+                config=run_config,
+                dispatcher=dispatcher
+            )
+            progress.update(task, advance=len(results))
+
+        total_time = time.time() - start_time
+        mem_mb = process.memory_info().rss / 1024 / 1024
+
+        # Display performance metrics in a table
+        table = Table(title="Crawl Performance Summary", show_lines=True)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="magenta")
+
+        table.add_row("Total URLs Crawled", str(len(urls)))
+        table.add_row("Total Time (s)", f"{total_time:.2f}")
+        table.add_row("Memory Usage (MB)", f"{mem_mb:.2f}")
+
+        console.print(table)
 
         for result in results:
             if result.success:
                 await process_result(result)
             else:
-                print(f"Failed to crawl {result.url}: {result.error_message}")
+                console.print(f"[red]❌ Failed to crawl[/red] {result.url}: {result.error_message}")
 
 
 async def process_result(result):
-    print(f"\nProcessing: {result.url}")
-    print(f"Status Code: {result.status_code}")
+    console.print(f"\n[bold green]✔ Processing:[/bold green] {result.url}")
+    console.print(f"Status Code: {result.status_code}")
 
     if result.markdown:
         clean_text = ' '.join(result.markdown.split())
         preview = clean_text[:150] + "..." if len(clean_text) > 150 else clean_text
-        print(f"Content Preview: {preview}")
+        console.print(f"[blue]Content Preview:[/blue] {preview}")
 
     if result.metadata:
-        print("\nMetadata:")
+        console.print("\n[bold]Metadata:[/bold]")
         for key, value in result.metadata.items():
-            print(f"  {key}: {value}")
+            console.print(f"  {key}: {value}")
 
     if result.links:
         internal_links = result.links.get("internal", [])
         external_links = result.links.get("external", [])
-        print(f"Found {len(internal_links)} internal links")
-        print(f"Found {len(external_links)} external links")
+        console.print(f"🔗 Found {len(internal_links)} internal links")
+        console.print(f"🌍 Found {len(external_links)} external links")
 
-    print("-" * 80)
+    console.print("-" * 80)
 
 
 asyncio.run(crawl_batch())
